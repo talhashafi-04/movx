@@ -10,11 +10,12 @@ Red dots are points the model was not sure about.
 Frame numbers start at 1, same as the event labeler.
 """
 import argparse
-import csv
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+from event_labels import DEFAULT_LABELS, get_events, read_labels
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -42,17 +43,6 @@ def find_clip(name, trimmed):
     return matches[0]
 
 
-def load_events(path, clip_key):
-    """Return (ah, br) if this clip is labeled in events.csv, else None."""
-    if not path.exists():
-        return None
-    with open(path) as f:
-        for row in csv.DictReader(f):
-            if row["clip"] == clip_key and row["status"] == "ok":
-                return int(row["ah_frame"]), int(row["br_frame"])
-    return None
-
-
 def draw_pose(frame, xy, conf, color, scale, thickness):
     pts = xy * scale
     for a, b in EDGES:
@@ -78,7 +68,7 @@ def main():
     ap.add_argument("--vit", default=None, help="folder with ViTPose .npz files")
     ap.add_argument("--trimmed", default=str(ROOT / "trimmed"))
     ap.add_argument("--yolo", default=str(ROOT / "data" / "yolo26x"))
-    ap.add_argument("--events", default=str(ROOT / "data" / "events.csv"))
+    ap.add_argument("--events", default=str(DEFAULT_LABELS), help="labels.csv with AH / BR")
     ap.add_argument("--out", default=str(ROOT / "outputs"))
     args = ap.parse_args()
 
@@ -99,7 +89,7 @@ def main():
         data = np.load(vit_file)
         vit_xy, vit_conf = data["kpts"], data["conf"]
 
-    events = load_events(Path(args.events), f"{player}/{clip.name}")
+    events = get_events(read_labels(args.events)[0], f"{player}/{clip.name}")
 
     cap = cv2.VideoCapture(str(clip))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -150,7 +140,7 @@ def main():
     writer.release()
     print(f"wrote {written} frames to {out_path}")
     if events:
-        print(f"AH {events[0]}, BR {events[1]} (from events.csv)")
+        print(f"AH {events[0]}, BR {events[1]} (from {Path(args.events).name})")
 
 
 if __name__ == "__main__":
