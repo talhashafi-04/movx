@@ -1,2 +1,22 @@
-outputs/cvat/*/images/
-.venv/*
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Generated outputs (keep only what you add with git add -f)
+outputs/
+
+# Large pose-model weights (Ultralytics re-downloads them)
+*.pt
+!models/**/*.pt
+
+# Raw videos: uncomment once they live in LFS or Drive
+# trimmed/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
