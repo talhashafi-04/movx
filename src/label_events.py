@@ -3,14 +3,16 @@
 Frame-by-frame AH / BR event labeler.
 
 Place this file in FYP/src/. It finds FYP/trimmed/ by itself (relative to the
-script, so it works from any directory) and writes FYP/data/events.csv.
+script, so it works from any directory) and writes FYP/data/labels.csv.
 
     python3 src/label_events.py                # label everything not yet done
     python3 src/label_events.py --only p6 p10  # only these players
     python3 src/label_events.py --redo         # revisit already-labeled clips
 
 Frame numbers are 1-based, matching ffmpeg's %04d.jpg extraction.
-Output: data/events.csv  (clip, ah_frame, br_frame, status)
+Output: data/labels.csv  (clip, player, split, ah_1based, br_1based, span,
+trim_start_frame, frame_count). Existing columns such as split are kept; a
+skipped clip gets empty AH / BR.
 
 Keys
     d / a      next / previous frame
@@ -25,21 +27,18 @@ Keys
     x          mark clip as bad/skip and go to next
     ESC        save progress and quit
 """
-import argparse, csv, sys
+import argparse, sys
 from pathlib import Path
 import cv2
+
+from event_labels import DEFAULT_LABELS, get_events, natural_key, read_labels, set_events, write_labels
 
 KEYS_HELP = "a/d:+-1  q/e:+-10  h:AH  b:BR  g:jump  r:clear  ENTER:save+next  p:prev  x:skip  ESC:quit"
 
 
 HERE = Path(__file__).resolve().parent          # FYP/src
 DEFAULT_ROOT = HERE.parent / "trimmed"          # FYP/trimmed
-DEFAULT_CSV = HERE.parent / "data" / "events.csv"  # FYP/data/events.csv
-
-
-def natural_key(s):
-    import re
-    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", str(s))]
+DEFAULT_CSV = DEFAULT_LABELS                    # FYP/data/labels.csv
 
 
 def load_frames(path, width):
@@ -59,24 +58,6 @@ def load_frames(path, width):
     return frames
 
 
-def read_csv(p):
-    rows = {}
-    if p.exists():
-        with open(p, newline="") as fh:
-            for r in csv.DictReader(fh):
-                rows[r["clip"]] = r
-    return rows
-
-
-def write_csv(p, rows):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["clip", "ah_frame", "br_frame", "status"])
-        w.writeheader()
-        for k in sorted(rows, key=natural_key):
-            w.writerow(rows[k])
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=str(DEFAULT_ROOT))
@@ -92,7 +73,7 @@ def main():
     if not clips:
         sys.exit(f"No clips found under {root}. Pass --root /path/to/trimmed.")
 
-    rows = read_csv(csv_path)
+    rows, fields = read_labels(csv_path)
     todo = [c for c in clips if a.redo or c not in rows]
     if not todo:
         sys.exit(f"All {len(clips)} clips already labeled in {csv_path}. Use --redo to revisit.")
@@ -109,8 +90,7 @@ def main():
             i += 1
             continue
         prev = rows.get(clip)
-        ah = int(prev["ah_frame"]) if prev and prev["ah_frame"] else None
-        br = int(prev["br_frame"]) if prev and prev["br_frame"] else None
+        ah, br = get_events(rows, clip) or (None, None)
         cur = (ah or int(n * 0.40)) - 1   # 0-based index; start near the delivery
         cur = max(0, min(n - 1, cur))
         jump_to_br = False
@@ -154,8 +134,8 @@ def main():
                 elif br <= ah:
                     msg = f"BR ({br}) must be after AH ({ah})"
                 else:
-                    rows[clip] = {"clip": clip, "ah_frame": ah, "br_frame": br, "status": "ok"}
-                    write_csv(csv_path, rows)
+                    set_events(rows, clip, ah, br, frame_count=n)
+                    write_labels(csv_path, rows, fields)
                     print(f"{clip}: AH={ah} BR={br} ({br - ah} frames)")
                     i += 1
                     break
@@ -163,22 +143,22 @@ def main():
                 i = max(0, i - 1)
                 break
             elif k == ord("x"):
-                rows[clip] = {"clip": clip, "ah_frame": "", "br_frame": "", "status": "skip"}
-                write_csv(csv_path, rows)
+                set_events(rows, clip, None, None, frame_count=n)
+                write_labels(csv_path, rows, fields)
                 print(f"{clip}: skipped")
                 i += 1
                 break
             elif k == 27:
-                write_csv(csv_path, rows)
+                write_labels(csv_path, rows, fields)
                 cv2.destroyAllWindows()
                 print(f"Saved {csv_path}. Quit.")
                 return
 
     cv2.destroyAllWindows()
-    write_csv(csv_path, rows)
-    ok = [r for r in rows.values() if r["status"] == "ok"]
+    write_labels(csv_path, rows, fields)
+    ok = [e for e in (get_events(rows, c) for c in rows) if e]
     if ok:
-        d = sorted(int(r["br_frame"]) - int(r["ah_frame"]) for r in ok)
+        d = sorted(br - ah for ah, br in ok)
         print(f"Done. {len(ok)} clips labeled. AH->BR frames: min {d[0]}, median {d[len(d)//2]}, max {d[-1]}")
 
 
