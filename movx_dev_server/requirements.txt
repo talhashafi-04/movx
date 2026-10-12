@@ -1,0 +1,6 @@
+fastapi==0.143.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+numpy==2.5.2
+opencv-python-headless==5.0.0.93
+ai-edge-litert==2.2.0
