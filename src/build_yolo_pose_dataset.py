@@ -376,11 +376,7 @@ def safe_prepare_output(output: Path, repo: Path, overwrite: bool) -> None:
         (output / "labels" / split).mkdir(parents=True, exist_ok=True)
 
 
-def save_frame(cap: cv2.VideoCapture, frame_index: int, path: Path, quality: int) -> tuple[int, int]:
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-    ok, frame = cap.read()
-    if not ok:
-        raise RuntimeError(f"cannot read frame {frame_index + 1} for {path.name}")
+def save_frame(frame: np.ndarray, path: Path, quality: int) -> tuple[int, int]:
     height, width = frame.shape[:2]
     if not cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, quality]):
         raise RuntimeError(f"cannot write {path}")
@@ -446,16 +442,34 @@ def build(args: argparse.Namespace) -> None:
         cap = cv2.VideoCapture(str(clip_path))
         if not cap.isOpened():
             raise RuntimeError(f"cannot open {clip_path}")
+        next_frame_index = 0
+        clip_context_written = 0
+        clip_context_skipped = 0
         try:
             for frame_index, human, origin in selected:
                 if frame_index < 0 or frame_index >= available:
                     raise IndexError(
                         f"{record.task_name}: frame {frame_index + 1} outside teacher arrays ({available})"
                     )
+                # Decode forwards once through the clip. Repeated CAP_PROP_POS_FRAMES
+                # seeks are extremely slow for inter-frame codecs (especially on
+                # Colab), because each seek may restart decoding at a keyframe.
+                while next_frame_index < frame_index:
+                    if not cap.grab():
+                        raise RuntimeError(
+                            f"cannot skip to frame {frame_index + 1} for {record.task_name}"
+                        )
+                    next_frame_index += 1
+                ok, frame = cap.read()
+                if not ok:
+                    raise RuntimeError(
+                        f"cannot read frame {frame_index + 1} for {record.task_name}"
+                    )
+                next_frame_index += 1
                 stem = f"{record.task_name}_f{frame_index + 1:04d}"
                 image_path = output / "images" / record.split / f"{stem}.jpg"
                 label_path = output / "labels" / record.split / f"{stem}.txt"
-                width, height = save_frame(cap, frame_index, image_path, args.jpeg_quality)
+                height, width = frame.shape[:2]
                 if human and (human.image_width != width or human.image_height != height):
                     raise ValueError(
                         f"{record.task_name}: frame dimensions {width}x{height} do not match "
@@ -476,8 +490,19 @@ def build(args: argparse.Namespace) -> None:
                 if human is not None:
                     points[list(arm_indices)] = human.points
                     visible[list(arm_indices)] = 2
-                box = person_box(yolo_boxes[frame_index], points, visible, width, height)
-                label_path.write_text(yolo_line(points, visible, box, width, height) + "\n")
+                try:
+                    box = person_box(yolo_boxes[frame_index], points, visible, width, height)
+                except ValueError:
+                    if human is not None:
+                        raise
+                    # Context frames are optional pseudo-labels. If neither
+                    # teacher found a usable person, omit the frame rather than
+                    # inventing a box or training it as a false negative.
+                    clip_context_skipped += 1
+                    continue
+                label_text = yolo_line(points, visible, box, width, height)
+                save_frame(frame, image_path, args.jpeg_quality)
+                label_path.write_text(label_text + "\n")
 
                 manifest_rows.append(
                     {
@@ -493,11 +518,14 @@ def build(args: argparse.Namespace) -> None:
                 )
                 split_counts[record.split] += 1
                 origin_counts[origin] += 1
+                if human is None:
+                    clip_context_written += 1
         finally:
             cap.release()
         print(
             f"[{clip_number}/{len(loaded)}] {record.task_name}: "
-            f"{len(human_frames)} human + {len(selected) - len(human_frames)} context"
+            f"{len(human_frames)} human + {clip_context_written} context"
+            + (f" ({clip_context_skipped} context skipped)" if clip_context_skipped else "")
         )
 
     fieldnames = [
